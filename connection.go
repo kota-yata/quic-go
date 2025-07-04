@@ -1075,9 +1075,12 @@ func (c *Conn) handleShortHeaderPacket(p receivedPacket, isCoalesced bool) (wasP
 	if c.perspective == protocol.PerspectiveClient {
 		return true, nil
 	}
+	// if addrsEqual(p.remoteAddr, c.RemoteAddr()) {
+	// 	return true, nil
+	// }
+
 	var shouldSwitchPath bool
 	if c.pathManager == nil {
-		c.logger.Infof("Creating path manager with AddressDiscoveryMode=%d for perspective=%s", c.config.AddressDiscoveryMode, c.perspective)
 		c.pathManager = newPathManager(
 			c.connIDManager.GetConnIDForPath,
 			c.connIDManager.RetireConnIDForPath,
