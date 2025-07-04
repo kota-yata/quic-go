@@ -35,6 +35,7 @@ const (
 	applicationCloseFrameType   = 0x1d
 	handshakeDoneFrameType      = 0x1e
 	resetStreamAtFrameType      = 0x24 // https://datatracker.ietf.org/doc/draft-ietf-quic-reliable-stream-reset/06/
+	observedAddressFrameType    = 0x9f81a6 // https://datatracker.ietf.org/doc/draft-ietf-quic-address-discovery/00/
 )
 
 var errUnknownFrameType = errors.New("unknown frame type")
@@ -156,6 +157,8 @@ func (p *FrameParser) parseFrame(b []byte, typ uint64, encLevel protocol.Encrypt
 				return nil, 0, errUnknownFrameType
 			}
 			frame, l, err = parseResetStreamFrame(b, true, v)
+		case 0x9f81a6, 0x9f81a7: // OBSERVED_ADDRESS frame types
+			frame, l, err = parseObservedAddressFrame(b, typ, v)
 		default:
 			err = errUnknownFrameType
 		}

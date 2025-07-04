@@ -27,6 +27,7 @@ func TestPathManagerIntentionalMigration(t *testing.T) {
 	pm := newPathManager(
 		func(id pathID) (protocol.ConnectionID, bool) { return connIDs[id], true },
 		func(id pathID) { retiredConnIDs = append(retiredConnIDs, connIDs[id]) },
+		0, // address discovery mode
 		utils.DefaultLogger,
 	)
 	now := time.Now()
@@ -130,6 +131,7 @@ func TestPathManagerMultipleProbes(t *testing.T) {
 	pm := newPathManager(
 		func(id pathID) (protocol.ConnectionID, bool) { return connIDs[id], true },
 		func(id pathID) {},
+		0, // address discovery mode
 		utils.DefaultLogger,
 	)
 	now := time.Now()
@@ -184,6 +186,7 @@ func TestPathManagerNATRebinding(t *testing.T) {
 	pm := newPathManager(
 		func(id pathID) (protocol.ConnectionID, bool) { return connIDs[id], true },
 		func(id pathID) { retiredConnIDs = append(retiredConnIDs, connIDs[id]) },
+		0, // address discovery mode
 		utils.DefaultLogger,
 	)
 
@@ -216,6 +219,7 @@ func TestPathManagerLimits(t *testing.T) {
 	pm := newPathManager(
 		func(id pathID) (protocol.ConnectionID, bool) { return connIDs[id], true },
 		func(id pathID) { retiredConnIDs = append(retiredConnIDs, connIDs[id]) },
+		0, // address discovery mode
 		utils.DefaultLogger,
 	)
 

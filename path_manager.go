@@ -3,6 +3,7 @@ package quic
 import (
 	"crypto/rand"
 	"net"
+	"net/netip"
 	"slices"
 	"time"
 
@@ -28,12 +29,13 @@ const maxPaths = 3
 const pathTimeout = 5 * time.Second
 
 type path struct {
-	id             pathID
-	addr           net.Addr
-	lastPacketTime time.Time
-	pathChallenge  [8]byte
-	validated      bool
-	rcvdNonProbing bool
+	id                  pathID
+	addr                net.Addr
+	lastPacketTime      time.Time
+	pathChallenge       [8]byte
+	validated           bool
+	rcvdNonProbing      bool
+	observedAddressSent bool
 }
 
 type pathManager struct {
@@ -44,19 +46,26 @@ type pathManager struct {
 	getConnID    func(pathID) (_ protocol.ConnectionID, ok bool)
 	retireConnID func(pathID)
 
+	// Address discovery support
+	observedAddressSequence uint64
+	addressDiscoveryMode    uint64
+
 	logger utils.Logger
 }
 
 func newPathManager(
 	getConnID func(pathID) (_ protocol.ConnectionID, ok bool),
 	retireConnID func(pathID),
+	addressDiscoveryMode uint64,
 	logger utils.Logger,
 ) *pathManager {
 	return &pathManager{
-		paths:        make([]*path, 0, maxPaths+1),
-		getConnID:    getConnID,
-		retireConnID: retireConnID,
-		logger:       logger,
+		paths:                   make([]*path, 0, maxPaths+1),
+		getConnID:               getConnID,
+		retireConnID:            retireConnID,
+		observedAddressSequence: 0,
+		addressDiscoveryMode:    addressDiscoveryMode,
+		logger:                  logger,
 	}
 }
 
@@ -86,9 +95,36 @@ func (pm *pathManager) HandlePacket(
 				pm.paths = slices.Delete(pm.paths, i, i+1)
 				pm.paths = append(pm.paths, p)
 			}
-			if pathChallenge == nil {
-				return protocol.ConnectionID{}, nil, shouldSwitch
+
+			// Check if we need to send OBSERVED_ADDRESS frame for existing path
+			var frames []ackhandler.Frame
+			if (pm.addressDiscoveryMode == 0 || pm.addressDiscoveryMode == 2) && !p.observedAddressSent {
+				if observedAddr, err := pm.convertToObservedAddress(remoteAddr); err == nil {
+					pm.observedAddressSequence++
+					frames = append(frames, ackhandler.Frame{
+						Frame: &wire.ObservedAddressFrame{
+							SequenceNumber: pm.observedAddressSequence,
+							Address:        observedAddr,
+						},
+						Handler: (*pathManagerAckHandler)(pm),
+					})
+					p.observedAddressSent = true
+					pm.logger.Infof("enqueueing OBSERVED_ADDRESS for existing path %s (seq=%d, addr=%s)", remoteAddr, pm.observedAddressSequence, observedAddr)
+				}
 			}
+
+			if pathChallenge == nil {
+				return protocol.ConnectionID{}, frames, shouldSwitch
+			}
+
+			// Handle PATH_CHALLENGE for existing path
+			if pathChallenge != nil {
+				frames = append(frames, ackhandler.Frame{
+					Frame:   &wire.PathResponseFrame{Data: pathChallenge.Data},
+					Handler: (*pathManagerAckHandler)(pm),
+				})
+			}
+			return protocol.ConnectionID{}, frames, shouldSwitch
 		}
 	}
 
@@ -118,7 +154,7 @@ func (pm *pathManager) HandlePacket(
 		return protocol.ConnectionID{}, nil, shouldSwitch
 	}
 
-	frames := make([]ackhandler.Frame, 0, 2)
+	frames := make([]ackhandler.Frame, 0, 3)
 	if p == nil {
 		var pathChallengeData [8]byte
 		rand.Read(pathChallengeData[:])
@@ -143,7 +179,46 @@ func (pm *pathManager) HandlePacket(
 			Handler: (*pathManagerAckHandler)(pm),
 		})
 	}
+
+	// Send OBSERVED_ADDRESS frame if enabled and we offer address observations
+	// and we haven't sent one for this path yet
+	if (pm.addressDiscoveryMode == 0 || pm.addressDiscoveryMode == 2) && !p.observedAddressSent {
+		if observedAddr, err := pm.convertToObservedAddress(remoteAddr); err == nil {
+			pm.observedAddressSequence++
+			frames = append(frames, ackhandler.Frame{
+				Frame: &wire.ObservedAddressFrame{
+					SequenceNumber: pm.observedAddressSequence,
+					Address:        observedAddr,
+				},
+				Handler: (*pathManagerAckHandler)(pm),
+			})
+			p.observedAddressSent = true
+			pm.logger.Infof("enqueueing OBSERVED_ADDRESS for path %s (seq=%d, addr=%s)", remoteAddr, pm.observedAddressSequence, observedAddr)
+		}
+	}
 	return connID, frames, shouldSwitch
+}
+
+func (pm *pathManager) convertToObservedAddress(addr net.Addr) (netip.AddrPort, error) {
+	switch a := addr.(type) {
+	case *net.UDPAddr:
+		if addrPort, err := netip.ParseAddrPort(a.String()); err == nil {
+			return addrPort, nil
+		}
+		// Try parsing IP and port separately
+		if ip, err := netip.ParseAddr(a.IP.String()); err == nil {
+			return netip.AddrPortFrom(ip, uint16(a.Port)), nil
+		}
+	case *net.TCPAddr:
+		if addrPort, err := netip.ParseAddrPort(a.String()); err == nil {
+			return addrPort, nil
+		}
+		// Try parsing IP and port separately
+		if ip, err := netip.ParseAddr(a.IP.String()); err == nil {
+			return netip.AddrPortFrom(ip, uint16(a.Port)), nil
+		}
+	}
+	return netip.AddrPort{}, net.ErrClosed
 }
 
 func (pm *pathManager) HandlePathResponseFrame(f *wire.PathResponseFrame) {

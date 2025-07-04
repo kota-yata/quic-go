@@ -182,7 +182,12 @@ type Config struct {
 	// Enable QUIC Stream Resets with Partial Delivery.
 	// See https://datatracker.ietf.org/doc/html/draft-ietf-quic-reliable-stream-reset-07.
 	EnableStreamResetPartialDelivery bool
-	Tracer                           func(context.Context, logging.Perspective, ConnectionID) *logging.ConnectionTracer
+	// AddressDiscoveryMode controls address discovery behavior.
+	// 0: disabled (default)
+	// 1: enabled for client connections
+	// 2: enabled for server connections
+	AddressDiscoveryMode int
+	Tracer               func(context.Context, logging.Perspective, ConnectionID) *logging.ConnectionTracer
 }
 
 // ClientHelloInfo contains information about an incoming connection attempt.

@@ -199,6 +199,10 @@ type Conn struct {
 	connStateMutex sync.Mutex
 	connState      ConnectionState
 
+	// Address discovery support
+	observedAddressMutex sync.Mutex
+	observedAddress      *net.UDPAddr
+
 	logID  string
 	tracer *logging.ConnectionTracer
 	logger utils.Logger
@@ -316,6 +320,7 @@ var newConnection = func(
 		InitialSourceConnectionID: srcConnID,
 		RetrySourceConnectionID:   retrySrcConnID,
 		EnableResetStreamAt:       conf.EnableStreamResetPartialDelivery,
+		AddressDiscoveryMode:      uint64(s.config.AddressDiscoveryMode),
 	}
 	if s.config.EnableDatagrams {
 		params.MaxDatagramFrameSize = wire.MaxDatagramSize
@@ -427,6 +432,7 @@ var newClientConnection = func(
 		ActiveConnectionIDLimit:   protocol.MaxActiveConnectionIDs,
 		InitialSourceConnectionID: srcConnID,
 		EnableResetStreamAt:       conf.EnableStreamResetPartialDelivery,
+		AddressDiscoveryMode:      uint64(s.config.AddressDiscoveryMode),
 	}
 	if s.config.EnableDatagrams {
 		params.MaxDatagramFrameSize = wire.MaxDatagramSize
@@ -1069,17 +1075,29 @@ func (c *Conn) handleShortHeaderPacket(p receivedPacket, isCoalesced bool) (wasP
 	if c.perspective == protocol.PerspectiveClient {
 		return true, nil
 	}
-	if addrsEqual(p.remoteAddr, c.RemoteAddr()) {
-		return true, nil
-	}
-
 	var shouldSwitchPath bool
 	if c.pathManager == nil {
+		c.logger.Infof("Creating path manager with AddressDiscoveryMode=%d for perspective=%s", c.config.AddressDiscoveryMode, c.perspective)
 		c.pathManager = newPathManager(
 			c.connIDManager.GetConnIDForPath,
 			c.connIDManager.RetireConnIDForPath,
+			uint64(c.config.AddressDiscoveryMode),
 			c.logger,
 		)
+	}
+
+	if addrsEqual(p.remoteAddr, c.RemoteAddr()) {
+		// Even for the original path, we may need to send OBSERVED_ADDRESS frames
+		destConnID, frames, _ := c.pathManager.HandlePacket(p.remoteAddr, p.rcvTime, pathChallenge, isNonProbing)
+		if len(frames) > 0 {
+			probe, buf, err := c.packer.PackPathProbePacket(destConnID, frames, c.version)
+			if err != nil {
+				return false, err
+			}
+			c.registerPackedShortHeaderPacket(probe, protocol.ECNNon, p.rcvTime)
+			c.sendQueue.Send(buf, 0, protocol.ECNNon)
+		}
+		return true, nil
 	}
 	destConnID, frames, shouldSwitchPath := c.pathManager.HandlePacket(p.remoteAddr, p.rcvTime, pathChallenge, isNonProbing)
 	if len(frames) > 0 {
@@ -1539,6 +1557,8 @@ func (c *Conn) handleFrame(
 		err = c.handleHandshakeDoneFrame(rcvTime)
 	case *wire.DatagramFrame:
 		err = c.handleDatagramFrame(frame)
+	case *wire.ObservedAddressFrame:
+		err = c.handleObservedAddressFrame(frame)
 	default:
 		err = fmt.Errorf("unexpected frame type: %s", reflect.ValueOf(&frame).Elem().Type().Name())
 	}
@@ -1635,6 +1655,54 @@ func (c *Conn) handlePathChallengeFrame(f *wire.PathChallengeFrame) {
 	if c.perspective == protocol.PerspectiveClient {
 		c.queueControlFrame(&wire.PathResponseFrame{Data: f.Data})
 	}
+}
+
+func (c *Conn) handleObservedAddressFrame(f *wire.ObservedAddressFrame) error {
+	c.logger.Infof("handleObservedAddressFrame: config.AddressDiscoveryMode=%d, perspective=%s", c.config.AddressDiscoveryMode, c.perspective)
+	// Only process if we requested address observations
+	if c.config.AddressDiscoveryMode != 1 && c.config.AddressDiscoveryMode != 2 {
+		c.logger.Infof("Rejecting OBSERVED_ADDRESS: client AddressDiscoveryMode=%d", c.config.AddressDiscoveryMode)
+		return &qerr.TransportError{
+			ErrorCode:    qerr.ProtocolViolation,
+			ErrorMessage: "received OBSERVED_ADDRESS frame without requesting address observations",
+		}
+	}
+
+	// Verify the peer offered address observations
+	if c.peerParams == nil || (c.peerParams.AddressDiscoveryMode != 0 && c.peerParams.AddressDiscoveryMode != 2) {
+		return &qerr.TransportError{
+			ErrorCode:    qerr.ProtocolViolation,
+			ErrorMessage: "received OBSERVED_ADDRESS frame from peer that did not offer address observations",
+		}
+	}
+
+	// Store the observed address
+	c.observedAddressMutex.Lock()
+	defer c.observedAddressMutex.Unlock()
+
+	// Convert netip.AddrPort to net.UDPAddr
+	addr := f.Address.Addr()
+	port := f.Address.Port()
+
+	var ip net.IP
+	if addr.Is4() {
+		ip4 := addr.As4()
+		ip = net.IP(ip4[:])
+	} else {
+		ip16 := addr.As16()
+		ip = net.IP(ip16[:])
+	}
+
+	c.observedAddress = &net.UDPAddr{
+		IP:   ip,
+		Port: int(port),
+	}
+
+	if c.logger != nil {
+		c.logger.Infof("Received OBSERVED_ADDRESS frame: sequence=%d, address=%s", f.SequenceNumber, f.Address)
+	}
+
+	return nil
 }
 
 func (c *Conn) handlePathResponseFrame(f *wire.PathResponseFrame) error {
@@ -2645,6 +2713,17 @@ func (c *Conn) NextConnection(ctx context.Context) (*Conn, error) {
 		c.streamsMap.UseResetMaps()
 	}
 	return c, nil
+}
+
+// GetObservedAddress returns the observed address received from the peer via OBSERVED_ADDRESS frame.
+// Returns nil if no observed address has been received yet.
+func (c *Conn) GetObservedAddress() net.Addr {
+	c.observedAddressMutex.Lock()
+	defer c.observedAddressMutex.Unlock()
+	if c.observedAddress == nil {
+		return nil
+	}
+	return c.observedAddress
 }
 
 // estimateMaxPayloadSize estimates the maximum payload size for short header packets.

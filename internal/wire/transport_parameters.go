@@ -47,6 +47,8 @@ const (
 	maxDatagramFrameSizeParameterID transportParameterID = 0x20
 	// https://datatracker.ietf.org/doc/draft-ietf-quic-reliable-stream-reset/06/
 	resetStreamAtParameterID transportParameterID = 0x17f7586d2cb571
+	// https://datatracker.ietf.org/doc/draft-ietf-quic-address-discovery/00/
+	addressDiscoveryParameterID transportParameterID = 0x9f81a176
 )
 
 // PreferredAddress is the value encoding in the preferred_address transport parameter
@@ -86,6 +88,7 @@ type TransportParameters struct {
 
 	MaxDatagramFrameSize protocol.ByteCount // RFC 9221
 	EnableResetStreamAt  bool               // https://datatracker.ietf.org/doc/draft-ietf-quic-reliable-stream-reset/06/
+	AddressDiscoveryMode uint64             // https://datatracker.ietf.org/doc/draft-ietf-quic-address-discovery/00/
 }
 
 // Unmarshal the transport parameters
@@ -207,6 +210,18 @@ func (p *TransportParameters) unmarshal(b []byte, sentBy protocol.Perspective, f
 				return fmt.Errorf("wrong length for reset_stream_at: %d (expected empty)", paramLen)
 			}
 			p.EnableResetStreamAt = true
+		case addressDiscoveryParameterID:
+			if paramLen != 0 {
+				mode, _, err := quicvarint.Parse(b[:paramLen])
+				if err != nil {
+					return err
+				}
+				if mode > 2 {
+					return fmt.Errorf("invalid address discovery mode: %d", mode)
+				}
+				p.AddressDiscoveryMode = mode
+			}
+			b = b[paramLen:]
 		default:
 			b = b[paramLen:]
 		}
@@ -445,6 +460,12 @@ func (p *TransportParameters) Marshal(pers protocol.Perspective) []byte {
 		b = quicvarint.Append(b, uint64(resetStreamAtParameterID))
 		b = quicvarint.Append(b, 0)
 	}
+	// QUIC Address Discovery
+	if p.AddressDiscoveryMode > 0 {
+		b = quicvarint.Append(b, uint64(addressDiscoveryParameterID))
+		b = quicvarint.Append(b, uint64(quicvarint.Len(p.AddressDiscoveryMode)))
+		b = quicvarint.Append(b, p.AddressDiscoveryMode)
+	}
 
 	if pers == protocol.PerspectiveClient && len(AdditionalTransportParametersClient) > 0 {
 		for k, v := range AdditionalTransportParametersClient {
@@ -496,6 +517,12 @@ func (p *TransportParameters) MarshalForSessionTicket(b []byte) []byte {
 	if p.EnableResetStreamAt {
 		b = quicvarint.Append(b, uint64(resetStreamAtParameterID))
 		b = quicvarint.Append(b, 0)
+	}
+	// address_discovery
+	if p.AddressDiscoveryMode > 0 {
+		b = quicvarint.Append(b, uint64(addressDiscoveryParameterID))
+		b = quicvarint.Append(b, uint64(quicvarint.Len(p.AddressDiscoveryMode)))
+		b = quicvarint.Append(b, p.AddressDiscoveryMode)
 	}
 	return b
 }
