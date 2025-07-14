@@ -2113,7 +2113,27 @@ func (c *Conn) sendPackets(now time.Time) error {
 				c.logger.Debugf("sending path probe packet from %s", c.LocalAddr())
 				c.logShortHeaderPacket(probe.DestConnID, probe.Ack, probe.Frames, probe.StreamFrames, probe.PacketNumber, probe.PacketNumberLen, probe.KeyPhase, protocol.ECNNon, buf.Len(), false)
 				c.registerPackedShortHeaderPacket(probe, protocol.ECNNon, now)
-				tr.WriteTo(buf.Data, c.conn.RemoteAddr())
+				
+				// Retry path probe sendmsg with 10 second timeout
+				probeTimeout := time.NewTimer(10 * time.Second)
+				defer probeTimeout.Stop()
+				
+				for {
+					_, err := tr.WriteTo(buf.Data, c.conn.RemoteAddr())
+					if err == nil {
+						break // Success, exit retry loop
+					}
+					
+					// Check if timeout exceeded
+					select {
+					case <-probeTimeout.C:
+						return fmt.Errorf("path probe failed: timeout after 10s, last error: %w", err)
+					default:
+						// Brief delay before retry to avoid busy loop
+						time.Sleep(10 * time.Millisecond)
+						continue
+					}
+				}
 				// There's (likely) more data to send. Loop around again.
 				c.scheduleSending()
 				return nil
