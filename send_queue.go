@@ -63,7 +63,12 @@ func (h *sendQueue) Send(p *packetBuffer, gsoSize uint16, ecn protocol.ECN) {
 }
 
 func (h *sendQueue) SendProbe(p *packetBuffer, addr net.Addr) {
-	h.conn.WriteTo(p.Data, addr)
+	const maxRetries = 10
+	for i := 0; i < maxRetries; i++ {
+		if err := h.conn.WriteTo(p.Data, addr); err == nil {
+			return
+		}
+	}
 }
 
 func (h *sendQueue) WouldBlock() bool {
