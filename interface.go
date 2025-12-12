@@ -5,11 +5,12 @@ import (
 	"crypto/tls"
 	"errors"
 	"net"
+	"slices"
 	"time"
 
 	"github.com/quic-go/quic-go/internal/handshake"
 	"github.com/quic-go/quic-go/internal/protocol"
-	"github.com/quic-go/quic-go/logging"
+	"github.com/quic-go/quic-go/qlogwriter"
 )
 
 // The StreamID is the ID of a QUIC stream.
@@ -24,6 +25,12 @@ const (
 	// Version2 is RFC 9369
 	Version2 = protocol.Version2
 )
+
+// SupportedVersions returns the support versions, sorted in descending order of preference.
+func SupportedVersions() []Version {
+	// clone the slice to prevent the caller from modifying the slice
+	return slices.Clone(protocol.SupportedVersions)
+}
 
 // A ClientToken is a token received by the client.
 // It can be used to skip address validation on future connection attempts.
@@ -187,7 +194,7 @@ type Config struct {
 	// 1: enabled for client connections
 	// 2: enabled for server connections
 	AddressDiscoveryMode int
-	Tracer               func(context.Context, logging.Perspective, ConnectionID) *logging.ConnectionTracer
+	Tracer               func(ctx context.Context, isClient bool, connID ConnectionID) qlogwriter.Trace
 }
 
 // ClientHelloInfo contains information about an incoming connection attempt.
