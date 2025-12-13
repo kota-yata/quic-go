@@ -52,6 +52,8 @@ type (
 	AckFrequencyFrame = wire.AckFrequencyFrame
 	// An ImmediateAckFrame is an IMMEDIATE_ACK frame.
 	ImmediateAckFrame = wire.ImmediateAckFrame
+	// An ObservedAddressFrame is an OBSERVED_ADDRESS frame.
+	ObservedAddressFrame = wire.ObservedAddressFrame
 )
 
 type AckRange = wire.AckRange
@@ -133,6 +135,8 @@ func (f Frame) Encode(enc *jsontext.Encoder) error {
 		return encodeAckFrequencyFrame(enc, frame)
 	case *ImmediateAckFrame:
 		return encodeImmediateAckFrame(enc, frame)
+	case *ObservedAddressFrame:
+		return encodeObservedAddressFrame(enc, frame)
 	default:
 		panic("unknown frame type")
 	}
@@ -476,6 +480,19 @@ func encodeImmediateAckFrame(enc *jsontext.Encoder, _ *ImmediateAckFrame) error 
 	h.WriteToken(jsontext.BeginObject)
 	h.WriteToken(jsontext.String("frame_type"))
 	h.WriteToken(jsontext.String("immediate_ack"))
+	h.WriteToken(jsontext.EndObject)
+	return h.err
+}
+
+func encodeObservedAddressFrame(enc *jsontext.Encoder, f *ObservedAddressFrame) error {
+	h := encoderHelper{enc: enc}
+	h.WriteToken(jsontext.BeginObject)
+	h.WriteToken(jsontext.String("frame_type"))
+	h.WriteToken(jsontext.String("observed_address"))
+	h.WriteToken(jsontext.String("sequence_number"))
+	h.WriteToken(jsontext.Uint(f.SequenceNumber))
+	h.WriteToken(jsontext.String("address"))
+	h.WriteToken(jsontext.String(f.Address.String()))
 	h.WriteToken(jsontext.EndObject)
 	return h.err
 }
